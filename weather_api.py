@@ -4,46 +4,37 @@ from datetime import datetime
 from collections import defaultdict
 
 
-BASE_URL  = "https://api.openweathermap.org/data/2.5"
-GEO_URL   = "https://api.openweathermap.org/geo/1.0"
+BASE_URL = "https://api.openweathermap.org/data/2.5"
+GEO_URL  = "https://api.openweathermap.org/geo/1.0"
 
 
-# ── formatting helpers ────────────────────────────────────────────────────────
+# ── formatting ────────────────────────────────────────────────────────────────
 
 def _fmt_hour(dt):
     h = dt.hour % 12 or 12
     return f"{h}{'AM' if dt.hour < 12 else 'PM'}"
 
-
 def _fmt_time(dt):
     h = dt.hour % 12 or 12
     return f"{h}:{dt.minute:02d} {'AM' if dt.hour < 12 else 'PM'}"
 
-
 def _fmt_date(dt):
-    months = ["Jan","Feb","Mar","Apr","May","Jun",
-              "Jul","Aug","Sep","Oct","Nov","Dec"]
-    days   = ["Monday","Tuesday","Wednesday","Thursday",
-              "Friday","Saturday","Sunday"]
+    months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+    days   = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
     return f"{days[dt.weekday()]}, {months[dt.month-1]} {dt.day}"
 
 
-# ── weather state / icon / emoji ─────────────────────────────────────────────
+# ── state / icon / emoji ──────────────────────────────────────────────────────
 
 def determine_state(weather_id, is_night):
     if is_night and 800 <= weather_id <= 802:
         return "night"
     wgrp = weather_id // 100
-    if wgrp == 2:
-        return "stormy"
-    if wgrp in (3, 5):
-        return "rainy"
-    if wgrp == 6:
-        return "snowy"
-    if weather_id in (803, 804):
-        return "rainy"
+    if wgrp == 2:  return "stormy"
+    if wgrp in (3, 5):  return "rainy"
+    if wgrp == 6:  return "snowy"
+    if weather_id in (803, 804):  return "rainy"
     return "sunny"
-
 
 def determine_icon(weather_id, is_night):
     if weather_id == 800:
@@ -53,49 +44,55 @@ def determine_icon(weather_id, is_night):
     if weather_id in (803, 804):
         return "few-clouds"
     wgrp = weather_id // 100
-    if wgrp == 2:
-        return "storm"
-    if wgrp in (3, 5):
-        return "rain"
-    if wgrp == 6:
-        return "snow"
-    if wgrp == 7:
-        return "fog"
+    if wgrp == 2:  return "storm"
+    if wgrp in (3, 5):  return "rain"
+    if wgrp == 6:  return "snow"
+    if wgrp == 7:  return "fog"
     return "few-clouds"
 
-
 def weather_emoji(weather_id, is_night):
-    if weather_id == 800:
-        return "🌙" if is_night else "☀️"
-    if weather_id == 801:
-        return "🌤️"
-    if weather_id in (802, 803):
-        return "⛅"
-    if weather_id == 804:
-        return "☁️"
+    if weather_id == 800:  return "🌙" if is_night else "☀️"
+    if weather_id == 801:  return "🌤️"
+    if weather_id in (802, 803):  return "⛅"
+    if weather_id == 804:  return "☁️"
     wgrp = weather_id // 100
-    if wgrp == 2:
-        return "⛈️"
-    if wgrp == 3:
-        return "🌦️"
-    if weather_id in (500, 501):
-        return "🌧️"
-    if wgrp == 5:
-        return "🌦️"
-    if wgrp == 6:
-        return "🌨️"
-    if wgrp == 7:
-        return "🌫️"
+    if wgrp == 2:  return "⛈️"
+    if wgrp == 3:  return "🌦️"
+    if weather_id in (500, 501):  return "🌧️"
+    if wgrp == 5:  return "🌦️"
+    if wgrp == 6:  return "🌨️"
+    if wgrp == 7:  return "🌫️"
     return "🌡️"
 
 
-# ── Step 1: Geocode any free-text location → lat / lon ───────────────────────
+# ── API key validation ────────────────────────────────────────────────────────
+
+def validate_api_key(api_key):
+    """
+    Returns "valid", "invalid", or "network_error".
+    Uses a cheap call (/weather?q=London) to check the key.
+    """
+    try:
+        r = requests.get(
+            f"{BASE_URL}/weather",
+            params={"q": "London", "appid": api_key, "units": "metric"},
+            timeout=8,
+        )
+        if r.status_code in (401, 403):
+            return "invalid"
+        if r.status_code == 200:
+            return "valid"
+        return "network_error"
+    except Exception:
+        return "network_error"
+
+
+# ── geocoding ─────────────────────────────────────────────────────────────────
 
 def geocode_location(location, api_key):
     """
-    Convert any location string (city, state, country, ZIP, full autocomplete
-    label like "Hyderabad, Telangana, IN") to (lat, lon, display_name).
-    Returns (None, None, None) on failure.
+    Convert any text (city, state, ZIP, autocomplete label) → (lat, lon, label).
+    Returns (None, None, None) if no results.
     """
     try:
         r = requests.get(
@@ -111,95 +108,97 @@ def geocode_location(location, api_key):
             if g.get("state"):
                 parts.append(g["state"])
             parts.append(g.get("country", ""))
-            display = ", ".join(p for p in parts if p)
-            return g["lat"], g["lon"], display
+            return g["lat"], g["lon"], ", ".join(p for p in parts if p)
         return None, None, None
     except Exception:
         return None, None, None
 
 
-# ── Step 2: Fetch weather by coordinates (robust, never fails on spelling) ───
+# ── weather fetchers (all by lat/lon) ─────────────────────────────────────────
 
-def get_current_weather(lat, lon, api_key):
+def _weather_by_coords(lat, lon, api_key):
     try:
-        r = requests.get(
-            f"{BASE_URL}/weather",
-            params={"lat": lat, "lon": lon, "appid": api_key, "units": "metric"},
-            timeout=10,
-        )
+        r = requests.get(f"{BASE_URL}/weather",
+                         params={"lat": lat, "lon": lon, "appid": api_key, "units": "metric"},
+                         timeout=10)
         r.raise_for_status()
         return r.json()
     except Exception:
         return None
 
+def _weather_by_name(location, api_key):
+    """Fallback direct text search — catches simple city names that geocoding missed."""
+    try:
+        r = requests.get(f"{BASE_URL}/weather",
+                         params={"q": location, "appid": api_key, "units": "metric"},
+                         timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return None
 
 def get_forecast(lat, lon, api_key):
     try:
-        r = requests.get(
-            f"{BASE_URL}/forecast",
-            params={"lat": lat, "lon": lon, "cnt": 40,
-                    "appid": api_key, "units": "metric"},
-            timeout=10,
-        )
+        r = requests.get(f"{BASE_URL}/forecast",
+                         params={"lat": lat, "lon": lon, "cnt": 40,
+                                 "appid": api_key, "units": "metric"},
+                         timeout=10)
         r.raise_for_status()
         return r.json()
     except Exception:
         return None
-
 
 def get_aqi(lat, lon, api_key):
     try:
-        r = requests.get(
-            f"{BASE_URL}/air_pollution",
-            params={"lat": lat, "lon": lon, "appid": api_key},
-            timeout=10,
-        )
+        r = requests.get(f"{BASE_URL}/air_pollution",
+                         params={"lat": lat, "lon": lon, "appid": api_key},
+                         timeout=10)
         r.raise_for_status()
         return r.json()
     except Exception:
         return None
-
 
 def get_uvi(lat, lon, api_key):
     try:
-        r = requests.get(
-            f"{BASE_URL}/uvi",
-            params={"lat": lat, "lon": lon, "appid": api_key},
-            timeout=10,
-        )
+        r = requests.get(f"{BASE_URL}/uvi",
+                         params={"lat": lat, "lon": lon, "appid": api_key},
+                         timeout=10)
         r.raise_for_status()
         return r.json()
     except Exception:
         return None
 
 
-# ── Main builder ──────────────────────────────────────────────────────────────
+# ── main builder ──────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=600, show_spinner=False)
 def build_data_object(location, api_key):
     """
-    Geocode *location* → lat/lon, then fetch all OWM data and return a dict
-    matching the exact shape expected by renderAll() in index.html.
-    Returns None on any failure.
+    Returns a data dict on success, or None on failure.
+    Uses geocoding first, falls back to direct name search.
     """
     try:
         from recommendations import get_recommendations
 
-        # ── 1. Geocode — works for any input: city, state, ZIP, full labels ──
+        # ── 1. Resolve location → lat/lon ──────────────────────────────────
         lat, lon, geo_display = geocode_location(location, api_key)
-        if lat is None:
-            return None
+        current = None
 
-        # ── 2. Parallel-ish fetches (sequential; all by lat/lon) ──
-        current      = get_current_weather(lat, lon, api_key)
-        forecast_data = get_forecast(lat, lon, api_key)
-        aqi_data     = get_aqi(lat, lon, api_key)
-        uvi_data     = get_uvi(lat, lon, api_key)
+        if lat is not None:
+            current = _weather_by_coords(lat, lon, api_key)
+
+        # Fallback: direct city-name search (handles simple names if geocoding fails)
+        if current is None:
+            current = _weather_by_name(location, api_key)
+            if current:
+                lat = current["coord"]["lat"]
+                lon = current["coord"]["lon"]
+                geo_display = None  # will be built from OWM response below
 
         if not current:
             return None
 
-        # ── 3. Night detection ──
+        # ── 2. Night detection ──────────────────────────────────────────────
         now_ts     = current.get("dt", 0)
         sunrise_ts = current.get("sys", {}).get("sunrise", 0)
         sunset_ts  = current.get("sys", {}).get("sunset", 0)
@@ -207,7 +206,8 @@ def build_data_object(location, api_key):
 
         weather_id = current["weather"][0]["id"]
 
-        # ── 4. Hourly: next 12 × 3-h forecast slots ──
+        # ── 3. Hourly: next 12 × 3-h forecast slots ────────────────────────
+        forecast_data = get_forecast(lat, lon, api_key)
         hourly = []
         if forecast_data and "list" in forecast_data:
             for entry in forecast_data["list"][:12]:
@@ -221,7 +221,7 @@ def build_data_object(location, api_key):
                     "e":    weather_emoji(wid, h < 6 or h >= 20),
                 })
 
-        # ── 5. 5-day forecast ──
+        # ── 4. 5-day forecast ───────────────────────────────────────────────
         forecast = []
         if forecast_data and "list" in forecast_data:
             days_map = defaultdict(list)
@@ -252,11 +252,12 @@ def build_data_object(location, api_key):
                     "rain": round(max(pops)),
                 })
 
-        # ── 6. AQI ──
+        # ── 5. AQI ─────────────────────────────────────────────────────────
+        aqi_data  = get_aqi(lat, lon, api_key)
         aqi_level = 1
         poll = {"CO": 0, "NO": 0, "NO2": 0, "O3": 0, "PM25": 0, "PM10": 0}
         if aqi_data and "list" in aqi_data and aqi_data["list"]:
-            item      = aqi_data["list"][0]
+            item = aqi_data["list"][0]
             aqi_level = item["main"]["aqi"]
             c = item.get("components", {})
             poll = {
@@ -268,28 +269,24 @@ def build_data_object(location, api_key):
                 "PM10": round(c.get("pm10",  0), 1),
             }
 
-        # ── 7. UV index ──
-        uv_index = 0
-        if uvi_data and "value" in uvi_data:
-            uv_index = round(uvi_data["value"])
+        # ── 6. UV ──────────────────────────────────────────────────────────
+        uvi_data  = get_uvi(lat, lon, api_key)
+        uv_index  = round(uvi_data["value"]) if uvi_data and "value" in uvi_data else 0
 
-        # ── 8. Sunrise / sunset / daylight ──
+        # ── 7. Sunrise / sunset / daylight ─────────────────────────────────
         sunrise_dt = datetime.fromtimestamp(sunrise_ts) if sunrise_ts else datetime.now()
         sunset_dt  = datetime.fromtimestamp(sunset_ts)  if sunset_ts  else datetime.now()
         daylight_s = max(0, sunset_ts - sunrise_ts)
 
-        # ── 9. City display name ──
-        # Prefer the geocoder label (already clean); fall back to OWM name
-        owm_name  = current.get("name", "")
-        country   = current.get("sys", {}).get("country", "")
-        city_str  = geo_display or (f"{owm_name}, {country}" if country else owm_name)
+        # ── 8. City display name ────────────────────────────────────────────
+        owm_name = current.get("name", "")
+        country  = current.get("sys", {}).get("country", "")
+        city_str = geo_display or (f"{owm_name}, {country}" if country else owm_name)
 
-        # ── 10. Wind: OWM gives m/s → km/h ──
+        # ── 9. Assemble ─────────────────────────────────────────────────────
         wind_kmh = round(current.get("wind", {}).get("speed", 0) * 3.6)
-
-        now_dt = datetime.fromtimestamp(now_ts)
-
-        recs = get_recommendations(current, forecast_data, aqi_level, uv_index)
+        now_dt   = datetime.fromtimestamp(now_ts)
+        recs     = get_recommendations(current, forecast_data, aqi_level, uv_index)
 
         return {
             "state": determine_state(weather_id, is_night),
@@ -310,8 +307,8 @@ def build_data_object(location, api_key):
             "recs":     recs,
             "hourly":   hourly,
             "forecast": forecast,
-            "aqi": {"level": aqi_level, "poll": poll},
-            "uv": {
+            "aqi":  {"level": aqi_level, "poll": poll},
+            "uv":   {
                 "index":    uv_index,
                 "sunrise":  _fmt_time(sunrise_dt),
                 "sunset":   _fmt_time(sunset_dt),

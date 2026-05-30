@@ -3,7 +3,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from weather_api import build_data_object
+from weather_api import build_data_object, validate_api_key
 
 st.set_page_config(
     page_title="WeatherSense",
@@ -175,17 +175,51 @@ elif city:
             .replace("</body>", make_scripts(ak))
         )
     else:
-        not_found_banner = f"""
+        # Diagnose WHY it failed so we show the right message
+        key_status = validate_api_key(api_key)
+
+        if key_status == "invalid":
+            error_banner = """
+<div style="position:fixed;inset:0;z-index:99999;
+            background:rgba(10,10,26,.92);display:flex;
+            align-items:center;justify-content:center;font-family:Outfit,sans-serif;">
+  <div style="background:rgba(255,255,255,.1);backdrop-filter:blur(18px);
+              border:1px solid rgba(255,100,100,.4);border-radius:20px;
+              padding:40px 48px;max-width:520px;text-align:center;color:#fff;">
+    <div style="font-size:2.5rem;margin-bottom:16px;">🔑</div>
+    <h2 style="margin:0 0 12px;font-weight:800;color:#ff9999">Invalid API Key</h2>
+    <p style="color:rgba(255,255,255,.75);line-height:1.7;margin:0 0 18px">
+      The key in <code style="background:rgba(255,255,255,.15);padding:2px 8px;
+      border-radius:6px">.streamlit/secrets.toml</code> was rejected by OpenWeatherMap.<br><br>
+      1. Get a valid free key at <strong>openweathermap.org/api</strong><br>
+      2. Update <code style="background:rgba(255,255,255,.15);padding:2px 8px;
+         border-radius:6px">OWM_API_KEY = "your_real_key"</code><br>
+      3. New keys can take <strong>10–120 minutes</strong> to activate after signup.
+    </p>
+  </div>
+</div>"""
+        elif key_status == "network_error":
+            error_banner = f"""
+<div style="position:fixed;top:18px;left:50%;transform:translateX(-50%);
+            z-index:99999;background:rgba(255,165,0,.18);
+            border:1px solid rgba(255,165,0,.45);backdrop-filter:blur(16px);
+            border-radius:14px;padding:13px 22px;color:#fff;
+            font-family:Outfit,sans-serif;font-size:14px;
+            display:flex;align-items:center;gap:10px;white-space:nowrap;">
+  ⚠️ Network error — could not reach OpenWeatherMap. Check your connection and try again.
+</div>"""
+        else:
+            error_banner = f"""
 <div style="position:fixed;top:18px;left:50%;transform:translateX(-50%);
             z-index:99999;background:rgba(255,68,68,.18);
             border:1px solid rgba(255,68,68,.45);backdrop-filter:blur(16px);
             border-radius:14px;padding:13px 22px;color:#fff;
             font-family:Outfit,sans-serif;font-size:14px;
             display:flex;align-items:center;gap:10px;white-space:nowrap;">
-  ❌ No results for <strong style="margin:0 4px">{city}</strong> — check spelling and try again.
+  ❌ No results for <strong style="margin:0 4px">{city}</strong> — try a more specific name (e.g. "Delhi, India").
 </div>"""
         display_html = html_content.replace("</body>",
-            not_found_banner + make_scripts(ak).replace("</body>", ""))
+            error_banner + make_scripts(ak).replace("</body>", ""))
 
 else:
     # No city yet — show mock demo; search button will navigate to ?city=
