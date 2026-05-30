@@ -347,6 +347,12 @@
     background:radial-gradient(circle at 36% 34%, #FFF6C0, #FFD700 55%, #FFA500);
     box-shadow:0 0 28px rgba(255,200,0,0.6); animation:sunPulse 3s ease-in-out infinite; }
 
+  /* few-clouds-night: small moon behind cloud */
+  .ic-moon-sm{ position:absolute; width:54px; height:54px; border-radius:50%; top:14px; left:24px;
+    background:radial-gradient(circle at 38% 36%, #f3f6ff, #c7d2f0 70%, #aab8e0);
+    box-shadow:inset -10px -6px 0 -3px rgba(120,140,200,0.25), 0 0 22px rgba(150,180,255,0.5);
+    animation:moonGlow 4s ease-in-out infinite; }
+
   /* Rain / Snow particle layer */
   .ic-particles{ position:absolute; inset:0; pointer-events:none; overflow:hidden; }
   .raindrop{ position:absolute; top:-10px; width:2px; height:14px;
@@ -686,6 +692,8 @@ function buildIcon(type){
       </div>`;
   } else if(type === "few-clouds"){
     host.innerHTML = `<div class="ic-sun-sm"></div><div class="ic-cloud" style="margin-top:34px;">${FACE}</div>`;
+  } else if(type === "few-clouds-night"){
+    host.innerHTML = `<div class="ic-moon-sm"></div><div class="ic-cloud" style="margin-top:34px;">${FACE}</div>`;
   } else if(type === "rain"){
     host.innerHTML = `<div class="ic-cloud dark" style="margin-top:-34px;">${FACE}</div><div class="ic-particles" id="pl"></div>`;
     addParticles(host.querySelector("#pl"), "rain", 20);

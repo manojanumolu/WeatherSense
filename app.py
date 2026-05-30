@@ -13,10 +13,8 @@ st.set_page_config(
 )
 
 # ── Erase every pixel of Streamlit chrome ────────────────────────────────────
-# The WeatherSense HTML is the entire UI; Streamlit is only the data layer.
 st.markdown("""
 <style>
-/* Header / toolbar / footer */
 header[data-testid="stHeader"]   { display: none !important; }
 [data-testid="stToolbar"]        { display: none !important; }
 [data-testid="stDecoration"]     { display: none !important; }
@@ -24,8 +22,6 @@ header[data-testid="stHeader"]   { display: none !important; }
 footer                           { display: none !important; }
 #MainMenu                        { display: none !important; }
 .stDeployButton                  { display: none !important; }
-
-/* Remove every gap / padding around the component */
 .stApp, .stMain, .main,
 section.main, .block-container,
 [data-testid="stMainBlockContainer"],
@@ -35,8 +31,6 @@ section.main, .block-container,
     max-width: 100% !important;
     overflow: hidden !important;
 }
-
-/* Stretch the iframe to fill the entire browser viewport */
 iframe {
     position: fixed !important;
     inset: 0 !important;
@@ -52,61 +46,95 @@ iframe {
 try:
     api_key = st.secrets["OWM_API_KEY"]
 except Exception:
-    # Can't use st.error (hidden by CSS), so serve an error overlay inside HTML
     api_key = None
 
-# ── City from URL query param (?city=London) ──────────────────────────────────
-# The WeatherSense "Get Weather" button in LIVE_MODE navigates to ?city=...
-# which causes Streamlit to re-render and fetch fresh data.
+# ── City from URL query param ─────────────────────────────────────────────────
 city = st.query_params.get("city", "").strip()
 
 # ── Load base HTML ────────────────────────────────────────────────────────────
 html_path    = Path(__file__).parent / "index.html"
 html_content = html_path.read_text(encoding="utf-8")
 
-# ── Script injected at end of <body> when in LIVE_MODE ───────────────────────
-# Overrides the "Get Weather" button (and Enter key) to navigate the parent
-# window to ?city=<input value>, which triggers a Streamlit data-fetch cycle.
-LIVE_NAV_SCRIPT = """
+# Always hide the demo switcher pills — live app shows real data only
+html_content = html_content.replace(
+    "</head>",
+    "<style>#demoSwitch{display:none!important}"
+    ".topbar{margin-bottom:4px!important}</style></head>",
+)
+
+# ── Scripts injected at end of <body> ─────────────────────────────────────────
+
+def make_scripts(api_key_js):
+    """Return the </body>-replacement string with nav + autocomplete scripts."""
+    return f"""
 <script>
-(function () {
-  function goCity() {
-    var city = (document.getElementById('search') || {}).value || '';
+/* ── City navigation: always active (search works in both demo and live) ── */
+(function () {{
+  function goCity() {{
+    var city = (document.getElementById('search') || {{}}).value || '';
     city = city.trim();
     if (!city) return;
     var base;
-    try { base = (window.parent || window).location.href.split('?')[0]; }
-    catch (e) { base = window.location.href.split('?')[0]; }
+    try {{ base = (window.parent || window).location.href.split('?')[0]; }}
+    catch (e) {{ base = window.location.href.split('?')[0]; }}
     var dest = base + '?city=' + encodeURIComponent(city);
-    try { (window.parent || window).location.href = dest; }
-    catch (e) { window.location.href = dest; }
-  }
+    try {{ (window.parent || window).location.href = dest; }}
+    catch (e) {{ window.location.href = dest; }}
+  }}
 
-  // Capture button click before the existing listener fires
   var btn = document.getElementById('getWeather');
-  if (btn) {
-    btn.addEventListener('click', function (e) {
-      if (window.LIVE_MODE) { e.stopImmediatePropagation(); goCity(); }
-    }, true);
-  }
+  if (btn) {{
+    btn.addEventListener('click', function (e) {{
+      e.stopImmediatePropagation();
+      goCity();
+    }}, true);
+  }}
 
-  // Also capture Enter in the search box
   var inp = document.getElementById('search');
-  if (inp) {
-    inp.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter' && window.LIVE_MODE) {
-        e.stopImmediatePropagation();
-        goCity();
-      }
-    }, true);
-  }
-})();
+  if (inp) {{
+    inp.addEventListener('keydown', function (e) {{
+      if (e.key === 'Enter') {{ e.stopImmediatePropagation(); goCity(); }}
+    }}, true);
+  }}
+
+  /* ── City autocomplete via OWM Geocoding API ── */
+  if (inp && '{api_key_js}') {{
+    var dl = document.createElement('datalist');
+    dl.id = 'city-suggestions';
+    inp.setAttribute('list', 'city-suggestions');
+    inp.setAttribute('autocomplete', 'off');
+    document.body.appendChild(dl);
+
+    var timer = null;
+    inp.addEventListener('input', function () {{
+      clearTimeout(timer);
+      var q = inp.value.trim();
+      if (q.length < 2) {{ dl.innerHTML = ''; return; }}
+      timer = setTimeout(function () {{
+        fetch('https://api.openweathermap.org/geo/1.0/direct?q='
+              + encodeURIComponent(q) + '&limit=5&appid={api_key_js}')
+          .then(function (r) {{ return r.json(); }})
+          .then(function (data) {{
+            dl.innerHTML = (data || []).map(function (c) {{
+              var label = c.name;
+              if (c.state) label += ', ' + c.state;
+              label += ', ' + c.country;
+              return '<option value="' + label + '">';
+            }}).join('');
+          }})
+          .catch(function () {{}});
+      }}, 320);
+    }});
+  }}
+}})();
 </script>
 </body>"""
 
-# ── Build the HTML to serve ───────────────────────────────────────────────────
+
+# ── Build HTML to serve ───────────────────────────────────────────────────────
+ak = api_key or ""
+
 if not api_key:
-    # Overlay the API-key error on top of the mock dashboard
     error_overlay = """
 <div style="position:fixed;inset:0;z-index:99999;
             background:rgba(10,10,26,.92);display:flex;
@@ -144,28 +172,24 @@ elif city:
                 "let currentData = MOCK_DATA_PRESETS.sunny; // TODO: REPLACE WITH API CALL",
                 f"let currentData = {json_str};",
             )
-            .replace("</body>", LIVE_NAV_SCRIPT)
+            .replace("</body>", make_scripts(ak))
         )
     else:
-        # City not found — show mock UI with an error banner
-        not_found = f"""
-<div style="position:fixed;top:20px;left:50%;transform:translateX(-50%);
-            z-index:99999;background:rgba(255,68,68,.15);
-            border:1px solid rgba(255,68,68,.4);backdrop-filter:blur(16px);
-            border-radius:14px;padding:14px 24px;color:#fff;
+        not_found_banner = f"""
+<div style="position:fixed;top:18px;left:50%;transform:translateX(-50%);
+            z-index:99999;background:rgba(255,68,68,.18);
+            border:1px solid rgba(255,68,68,.45);backdrop-filter:blur(16px);
+            border-radius:14px;padding:13px 22px;color:#fff;
             font-family:Outfit,sans-serif;font-size:14px;
-            display:flex;align-items:center;gap:10px;">
-  ❌ Could not find weather for <strong>{city}</strong> — check the city name.
-</div>
-</body>"""
-        display_html = (
-            html_content
-            .replace("</body>", not_found + LIVE_NAV_SCRIPT.replace("</body>", ""))
-        )
+            display:flex;align-items:center;gap:10px;white-space:nowrap;">
+  ❌ No results for <strong style="margin:0 4px">{city}</strong> — check spelling and try again.
+</div>"""
+        display_html = html_content.replace("</body>",
+            not_found_banner + make_scripts(ak).replace("</body>", ""))
 
 else:
-    # No city yet — show mock demo with LIVE_NAV_SCRIPT so search works
-    display_html = html_content.replace("</body>", LIVE_NAV_SCRIPT)
+    # No city yet — show mock demo; search button will navigate to ?city=
+    display_html = html_content.replace("</body>", make_scripts(ak))
 
-# ── Render — fills 100 % of the viewport via the CSS above ───────────────────
-st.components.v1.html(display_html, height=800, scrolling=False)
+# ── Render — fills 100 % of viewport via the CSS above ───────────────────────
+st.components.v1.html(display_html, height=800, scrolling=True)

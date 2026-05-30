@@ -31,7 +31,8 @@ def _fmt_date(dt):
 
 def determine_state(weather_id, is_night):
     """Map OWM weather id + night flag → one of the 5 CSS background states."""
-    if is_night and weather_id >= 800:
+    # Clear or lightly cloudy at night → dark night sky
+    if is_night and 800 <= weather_id <= 802:
         return "night"
     wgrp = weather_id // 100
     if wgrp == 2:
@@ -49,7 +50,10 @@ def determine_icon(weather_id, is_night):
     """Map OWM weather id → one of the CSS icon type strings."""
     if weather_id == 800:
         return "clear-night" if is_night else "clear-day"
-    if weather_id in (801, 802, 803, 804):
+    if weather_id in (801, 802):
+        # Moon peeking behind cloud at night
+        return "few-clouds-night" if is_night else "few-clouds"
+    if weather_id in (803, 804):
         return "few-clouds"
     wgrp = weather_id // 100
     if wgrp == 2:
@@ -146,7 +150,7 @@ def get_uvi(lat, lon, api_key):
 
 # ── main builder ─────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=600, show_spinner=False)
 def build_data_object(location, api_key):
     """
     Fetch all OWM data for *location* and return a dict matching the exact
