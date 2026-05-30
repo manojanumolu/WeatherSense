@@ -852,7 +852,7 @@ function renderAQI(d){
   document.getElementById("aqiSection").innerHTML = `
     <div class="card-h">🌬️ Air Quality</div>
     <div class="aqi-main">
-      <div class="aqi-num" style="color:${m.color}">${d.aqi.level}</div>
+      <div class="aqi-num" style="color:${m.color}">${d.aqi.value ?? d.aqi.level}</div>
       <div class="aqi-label" style="color:${m.color}">${m.label}</div>
     </div>
     <div class="aqi-bar-track"><div class="aqi-bar-fill" style="width:${d.aqi.level/5*100}%;background:${m.color}"></div></div>

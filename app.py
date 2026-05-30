@@ -49,7 +49,7 @@ except Exception:
     api_key = None
 
 # ── City from URL query param ─────────────────────────────────────────────────
-city = st.query_params.get("city", "").strip()
+city = st.query_params.get("city", "").strip() or "Hyderabad, India"
 
 # ── Load base HTML ────────────────────────────────────────────────────────────
 html_path    = Path(__file__).parent / "index.html"

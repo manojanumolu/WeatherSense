@@ -65,6 +65,26 @@ def weather_emoji(weather_id, is_night):
     return "🌡️"
 
 
+# ── AQI helpers ──────────────────────────────────────────────────────────────
+
+def _pm25_to_aqi(pm25):
+    """US AQI from PM2.5 concentration (μg/m³)."""
+    bp = [
+        (0.0,   12.0,   0,  50),
+        (12.1,  35.4,  51, 100),
+        (35.5,  55.4, 101, 150),
+        (55.5, 150.4, 151, 200),
+        (150.5, 250.4, 201, 300),
+        (250.5, 350.4, 301, 400),
+        (350.5, 500.4, 401, 500),
+    ]
+    pm25 = max(pm25, 0)
+    for c_lo, c_hi, i_lo, i_hi in bp:
+        if c_lo <= pm25 <= c_hi:
+            return round((i_hi - i_lo) / (c_hi - c_lo) * (pm25 - c_lo) + i_lo)
+    return 500
+
+
 # ── API key validation ────────────────────────────────────────────────────────
 
 def validate_api_key(api_key):
@@ -302,7 +322,7 @@ def build_data_object(location, api_key):
             "recs":     recs,
             "hourly":   hourly,
             "forecast": forecast,
-            "aqi":  {"level": aqi_level, "poll": poll},
+            "aqi":  {"level": aqi_level, "value": _pm25_to_aqi(poll["PM25"]), "poll": poll},
             "uv":   {
                 "index":    uv_index,
                 "sunrise":  _fmt_time(sunrise_dt),
