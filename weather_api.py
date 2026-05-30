@@ -4,10 +4,11 @@ from datetime import datetime
 from collections import defaultdict
 
 
-BASE_URL = "https://api.openweathermap.org/data/2.5"
+BASE_URL  = "https://api.openweathermap.org/data/2.5"
+GEO_URL   = "https://api.openweathermap.org/geo/1.0"
 
 
-# ── helpers ──────────────────────────────────────────────────────────────────
+# ── formatting helpers ────────────────────────────────────────────────────────
 
 def _fmt_hour(dt):
     h = dt.hour % 12 or 12
@@ -27,11 +28,9 @@ def _fmt_date(dt):
     return f"{days[dt.weekday()]}, {months[dt.month-1]} {dt.day}"
 
 
-# ── state / icon / emoji helpers ─────────────────────────────────────────────
+# ── weather state / icon / emoji ─────────────────────────────────────────────
 
 def determine_state(weather_id, is_night):
-    """Map OWM weather id + night flag → one of the 5 CSS background states."""
-    # Clear or lightly cloudy at night → dark night sky
     if is_night and 800 <= weather_id <= 802:
         return "night"
     wgrp = weather_id // 100
@@ -47,11 +46,9 @@ def determine_state(weather_id, is_night):
 
 
 def determine_icon(weather_id, is_night):
-    """Map OWM weather id → one of the CSS icon type strings."""
     if weather_id == 800:
         return "clear-night" if is_night else "clear-day"
     if weather_id in (801, 802):
-        # Moon peeking behind cloud at night
         return "few-clouds-night" if is_night else "few-clouds"
     if weather_id in (803, 804):
         return "few-clouds"
@@ -68,7 +65,6 @@ def determine_icon(weather_id, is_night):
 
 
 def weather_emoji(weather_id, is_night):
-    """Return a representative emoji for a given OWM weather id."""
     if weather_id == 800:
         return "🌙" if is_night else "☀️"
     if weather_id == 801:
@@ -93,13 +89,42 @@ def weather_emoji(weather_id, is_night):
     return "🌡️"
 
 
-# ── individual API fetchers ───────────────────────────────────────────────────
+# ── Step 1: Geocode any free-text location → lat / lon ───────────────────────
 
-def get_current_weather(location, api_key):
+def geocode_location(location, api_key):
+    """
+    Convert any location string (city, state, country, ZIP, full autocomplete
+    label like "Hyderabad, Telangana, IN") to (lat, lon, display_name).
+    Returns (None, None, None) on failure.
+    """
+    try:
+        r = requests.get(
+            f"{GEO_URL}/direct",
+            params={"q": location, "limit": 1, "appid": api_key},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data:
+            g = data[0]
+            parts = [g.get("name", "")]
+            if g.get("state"):
+                parts.append(g["state"])
+            parts.append(g.get("country", ""))
+            display = ", ".join(p for p in parts if p)
+            return g["lat"], g["lon"], display
+        return None, None, None
+    except Exception:
+        return None, None, None
+
+
+# ── Step 2: Fetch weather by coordinates (robust, never fails on spelling) ───
+
+def get_current_weather(lat, lon, api_key):
     try:
         r = requests.get(
             f"{BASE_URL}/weather",
-            params={"q": location, "appid": api_key, "units": "metric"},
+            params={"lat": lat, "lon": lon, "appid": api_key, "units": "metric"},
             timeout=10,
         )
         r.raise_for_status()
@@ -148,29 +173,33 @@ def get_uvi(lat, lon, api_key):
         return None
 
 
-# ── main builder ─────────────────────────────────────────────────────────────
+# ── Main builder ──────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=600, show_spinner=False)
 def build_data_object(location, api_key):
     """
-    Fetch all OWM data for *location* and return a dict matching the exact
-    shape expected by renderAll() in index.html. Returns None on any failure.
+    Geocode *location* → lat/lon, then fetch all OWM data and return a dict
+    matching the exact shape expected by renderAll() in index.html.
+    Returns None on any failure.
     """
     try:
         from recommendations import get_recommendations
 
-        current = get_current_weather(location, api_key)
+        # ── 1. Geocode — works for any input: city, state, ZIP, full labels ──
+        lat, lon, geo_display = geocode_location(location, api_key)
+        if lat is None:
+            return None
+
+        # ── 2. Parallel-ish fetches (sequential; all by lat/lon) ──
+        current      = get_current_weather(lat, lon, api_key)
+        forecast_data = get_forecast(lat, lon, api_key)
+        aqi_data     = get_aqi(lat, lon, api_key)
+        uvi_data     = get_uvi(lat, lon, api_key)
+
         if not current:
             return None
 
-        lat = current["coord"]["lat"]
-        lon = current["coord"]["lon"]
-
-        forecast_data = get_forecast(lat, lon, api_key)
-        aqi_data      = get_aqi(lat, lon, api_key)
-        uvi_data      = get_uvi(lat, lon, api_key)
-
-        # ── night detection ──
+        # ── 3. Night detection ──
         now_ts     = current.get("dt", 0)
         sunrise_ts = current.get("sys", {}).get("sunrise", 0)
         sunset_ts  = current.get("sys", {}).get("sunset", 0)
@@ -178,23 +207,21 @@ def build_data_object(location, api_key):
 
         weather_id = current["weather"][0]["id"]
 
-        # ── hourly: next 12 3-h intervals from /forecast ──
+        # ── 4. Hourly: next 12 × 3-h forecast slots ──
         hourly = []
         if forecast_data and "list" in forecast_data:
             for entry in forecast_data["list"][:12]:
                 dt  = datetime.fromtimestamp(entry["dt"])
                 wid = entry["weather"][0]["id"]
                 h   = dt.hour
-                entry_is_night = h < 6 or h >= 20
-                rain_pct = round(entry.get("pop", 0) * 100)
                 hourly.append({
                     "t":    _fmt_hour(dt),
                     "temp": round(entry["main"]["temp"]),
-                    "rain": rain_pct,
-                    "e":    weather_emoji(wid, entry_is_night),
+                    "rain": round(entry.get("pop", 0) * 100),
+                    "e":    weather_emoji(wid, h < 6 or h >= 20),
                 })
 
-        # ── 5-day forecast: one entry per future day ──
+        # ── 5. 5-day forecast ──
         forecast = []
         if forecast_data and "list" in forecast_data:
             days_map = defaultdict(list)
@@ -225,7 +252,7 @@ def build_data_object(location, api_key):
                     "rain": round(max(pops)),
                 })
 
-        # ── AQI ──
+        # ── 6. AQI ──
         aqi_level = 1
         poll = {"CO": 0, "NO": 0, "NO2": 0, "O3": 0, "PM25": 0, "PM10": 0}
         if aqi_data and "list" in aqi_data and aqi_data["list"]:
@@ -241,31 +268,27 @@ def build_data_object(location, api_key):
                 "PM10": round(c.get("pm10",  0), 1),
             }
 
-        # ── UV index ──
+        # ── 7. UV index ──
         uv_index = 0
         if uvi_data and "value" in uvi_data:
             uv_index = round(uvi_data["value"])
 
-        # ── sunrise / sunset / daylight ──
-        sunrise_dt  = datetime.fromtimestamp(sunrise_ts) if sunrise_ts else datetime.now()
-        sunset_dt   = datetime.fromtimestamp(sunset_ts)  if sunset_ts  else datetime.now()
-        daylight_s  = max(0, sunset_ts - sunrise_ts)
-        dl_h        = daylight_s // 3600
-        dl_m        = (daylight_s % 3600) // 60
+        # ── 8. Sunrise / sunset / daylight ──
+        sunrise_dt = datetime.fromtimestamp(sunrise_ts) if sunrise_ts else datetime.now()
+        sunset_dt  = datetime.fromtimestamp(sunset_ts)  if sunset_ts  else datetime.now()
+        daylight_s = max(0, sunset_ts - sunrise_ts)
 
-        # ── city string ──
-        city_name = current.get("name", location)
+        # ── 9. City display name ──
+        # Prefer the geocoder label (already clean); fall back to OWM name
+        owm_name  = current.get("name", "")
         country   = current.get("sys", {}).get("country", "")
-        city_str  = f"{city_name}, {country}" if country else city_name
+        city_str  = geo_display or (f"{owm_name}, {country}" if country else owm_name)
 
-        # ── date / time (based on server timestamp) ──
-        now_dt   = datetime.fromtimestamp(now_ts)
+        # ── 10. Wind: OWM gives m/s → km/h ──
+        wind_kmh = round(current.get("wind", {}).get("speed", 0) * 3.6)
 
-        # ── wind: OWM gives m/s → km/h ──
-        wind_ms  = current.get("wind", {}).get("speed", 0)
-        wind_kmh = round(wind_ms * 3.6)
+        now_dt = datetime.fromtimestamp(now_ts)
 
-        # ── recommendations ──
         recs = get_recommendations(current, forecast_data, aqi_level, uv_index)
 
         return {
@@ -287,15 +310,12 @@ def build_data_object(location, api_key):
             "recs":     recs,
             "hourly":   hourly,
             "forecast": forecast,
-            "aqi": {
-                "level": aqi_level,
-                "poll":  poll,
-            },
+            "aqi": {"level": aqi_level, "poll": poll},
             "uv": {
-                "index":   uv_index,
-                "sunrise": _fmt_time(sunrise_dt),
-                "sunset":  _fmt_time(sunset_dt),
-                "daylight": f"{dl_h}h {dl_m:02d}m",
+                "index":    uv_index,
+                "sunrise":  _fmt_time(sunrise_dt),
+                "sunset":   _fmt_time(sunset_dt),
+                "daylight": f"{daylight_s // 3600}h {(daylight_s % 3600) // 60:02d}m",
             },
         }
     except Exception:
